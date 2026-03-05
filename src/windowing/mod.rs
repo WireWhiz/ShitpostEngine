@@ -4,26 +4,23 @@ use std::sync::atomic::AtomicBool;
 
 use thiserror::Error;
 use windows::Win32::Foundation::{GetLastError, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::Diagnostics::Debug::FormatMessageA;
 use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleHandleExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetMessageW,
-    GetWindowLongPtrW, RegisterClassExW, RegisterClassW, SIZE_MAXHIDE, SIZE_MAXIMIZED,
-    SIZE_MAXSHOW, SIZE_MINIMIZED, SIZE_RESTORED, SW_SHOW, SetWindowLongPtrW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CREATE, WM_NCCREATE, WM_SIZE, WNDCLASSEXW,
-    WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    GetWindowLongPtrW, RegisterClassExW, SW_SHOW, SetWindowLongPtrW, ShowWindow, TranslateMessage,
+    WINDOW_EX_STYLE, WM_CREATE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::w;
-use windows_api_utils::prelude::*;
 
 pub struct WindowProcState {
     message: String,
 }
 
 pub struct Window {
-    handle: HWND,
+    pub handle: HWND,
+    pub hinstance: HINSTANCE,
     window_callback_state: Box<WindowProcState>,
 }
 
@@ -46,11 +43,11 @@ unsafe extern "system" fn windows_window_proc(
             }
             _ => {
                 if !state.is_null() {
-                    println!(
+                    /*println!(
                         "Unmapped window event {} for window {}",
                         message_code,
                         (*state).message
-                    );
+                    );*/
                 }
                 DefWindowProcW(window_handle, message_code, wparam, lparam)
             }
@@ -62,7 +59,7 @@ unsafe extern "system" fn windows_window_proc(
 impl Window {
     pub fn new() -> Result<Window, WindowCreateError> {
         unsafe {
-            let hInstance: HINSTANCE = {
+            let hinstance: HINSTANCE = {
                 let mut hmodule: HMODULE = HMODULE(ptr::null_mut());
                 GetModuleHandleExW(
                     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
@@ -76,7 +73,7 @@ impl Window {
                 let wndclass = WNDCLASSEXW {
                     cbSize: (size_of::<WNDCLASSEXW>() as u32),
                     lpfnWndProc: Some(windows_window_proc), //todo!("We need a window procedure"),
-                    hInstance,
+                    hInstance: hinstance,
                     lpszClassName: w!("Shitpost Engine Class"),
                     ..Default::default()
                 };
@@ -106,7 +103,7 @@ impl Window {
                 1080,
                 None,
                 None,
-                Some(hInstance),
+                Some(hinstance),
                 Some(window_callback_state.as_ref() as *const WindowProcState as *const c_void),
             )
             .map_err(|_| WindowCreateError::FailedToCreateWindow)?;
@@ -121,6 +118,7 @@ impl Window {
             Ok(Window {
                 handle,
                 window_callback_state,
+                hinstance,
             })
         }
     }
@@ -128,7 +126,7 @@ impl Window {
     pub fn update(&mut self) {
         let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
         unsafe {
-            while (GetMessageW(&mut msg, Some(self.handle), 0, 0).as_bool()) {
+            while GetMessageW(&mut msg, Some(self.handle), 0, 0).as_bool() {
                 let _did_translate = TranslateMessage(&mut msg);
                 let _res = DispatchMessageW(&msg);
             }
