@@ -21,8 +21,10 @@ fn main() {
         ("src/wrapper_xlib.h", "src/vk_xlib.rs")
     };
 
+    let vk_sdk = env::var("VULKAN_SDK");
+
     // Find headers — prefer VULKAN_SDK env var, fall back to system paths
-    let vulkan_include = if let Ok(sdk) = env::var("VULKAN_SDK") {
+    let vulkan_include = if let Ok(sdk) = vk_sdk {
         // Make sure on windows we're searching for the lib in the sdk
         println!("cargo::rustc-link-search={}\\Lib", sdk);
 

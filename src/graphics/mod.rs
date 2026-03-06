@@ -4,6 +4,7 @@ use std::{
     str::FromStr,
 };
 
+use shader_slang::Downcast;
 use std::ffi::CStr;
 use thiserror::Error;
 pub use vulkan_c::*;
@@ -14,6 +15,11 @@ pub struct WindowCtx {
     pub surface: VkSurfaceKHR,
     pub present_queue: VkQueue,
     pub swapchain: VkSwapchainKHR,
+    pub swap_images: Vec<VkImage>,
+    pub swap_view_create_infos: Vec<VkImageViewCreateInfo>,
+    pub swap_fmt: VkFormat,
+    pub swap_color_space: VkColorSpaceKHR,
+    pub swap_extent: VkExtent2D,
 }
 
 pub struct Graphics {
@@ -415,6 +421,10 @@ impl Graphics {
                     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &mut surface_caps);
 
                     let size = window.resolution();
+                    let swap_extent = VkExtent2D {
+                        width: size.x as u32,
+                        height: size.y as u32,
+                    };
 
                     let swapchain_create_info = VkSwapchainCreateInfoKHR {
                         sType: VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -424,10 +434,7 @@ impl Graphics {
                         minImageCount: surface_caps.minImageCount + 1,
                         imageFormat: swapchain_fmt,
                         imageColorSpace: swapchain_color_space,
-                        imageExtent: VkExtent2D {
-                            width: size.x as u32,
-                            height: size.y as u32,
-                        },
+                        imageExtent: swap_extent,
                         imageArrayLayers: 1,
                         imageUsage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
                         imageSharingMode: VK_SHARING_MODE_EXCLUSIVE,
@@ -449,16 +456,66 @@ impl Graphics {
                         ptr::null(),
                         &mut swapchain,
                     ))?;
+
+                    let mut swap_image_count = 0;
+                    check_vk(vkGetSwapchainImagesKHR(
+                        device,
+                        swapchain,
+                        &mut swap_image_count,
+                        ptr::null_mut(),
+                    ))?;
+                    let mut swap_images = Vec::with_capacity(swap_image_count as usize);
+                    check_vk(vkGetSwapchainImagesKHR(
+                        device,
+                        swapchain,
+                        &mut swap_image_count,
+                        swap_images.as_mut_ptr(),
+                    ))?;
+                    swap_images.set_len(swap_image_count as usize);
+
+                    let mut swap_view_create_infos = Vec::with_capacity(swap_image_count as usize);
+                    let mut swap_view_create_info = VkImageViewCreateInfo {
+                        sType: VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                        pNext: ptr::null(),
+                        flags: 0,
+                        image: ptr::null_mut(),
+                        viewType: VK_IMAGE_VIEW_TYPE_2D,
+                        format: swapchain_fmt,
+                        components: VkComponentMapping {
+                            r: VK_COMPONENT_SWIZZLE_IDENTITY,
+                            g: VK_COMPONENT_SWIZZLE_IDENTITY,
+                            b: VK_COMPONENT_SWIZZLE_IDENTITY,
+                            a: VK_COMPONENT_SWIZZLE_IDENTITY,
+                        },
+                        subresourceRange: VkImageSubresourceRange {
+                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                            baseMipLevel: 0,
+                            levelCount: 1,
+                            baseArrayLayer: 0,
+                            layerCount: 1,
+                        },
+                    };
+                    for image in &swap_images {
+                        swap_view_create_info.image = image.clone();
+                        swap_view_create_infos.push(swap_view_create_info.clone());
+                    }
                     println!("created swapchain!");
 
                     Some(WindowCtx {
                         surface,
                         present_queue,
                         swapchain,
+                        swap_images,
+                        swap_view_create_infos,
+                        swap_fmt: swapchain_fmt,
+                        swap_color_space: swapchain_color_space,
+                        swap_extent,
                     })
                 } else {
                     None
                 };
+
+            // Create main graphics pipeline
 
             Ok(Graphics {
                 instance,
@@ -468,6 +525,280 @@ impl Graphics {
                 graphics_queue,
             })
         }
+    }
+
+    pub fn load_material(&mut self, shader: &SpirvModule) -> Result<Pipeline, PipelineCreateError> {
+        unsafe {
+            let shader_module_create_info = VkShaderModuleCreateInfo {
+                sType: VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                codeSize: shader.bytecode.len(),
+                pCode: mem::transmute(shader.bytecode.as_ptr()),
+            };
+
+            let mut shader_module = mem::zeroed();
+            check_vk(vkCreateShaderModule(
+                self.device,
+                &shader_module_create_info,
+                ptr::null_mut(),
+                &mut shader_module,
+            ))?;
+
+            let vert_stage_create_info = VkPipelineShaderStageCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                stage: VK_SHADER_STAGE_VERTEX_BIT,
+                module: shader_module,
+                pName: c"vertMain".as_ptr(),
+                pSpecializationInfo: ptr::null(),
+            };
+
+            let frag_stage_create_info = VkPipelineShaderStageCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                stage: VK_SHADER_STAGE_FRAGMENT_BIT,
+                module: shader_module,
+                pName: c"fragMain".as_ptr(),
+                pSpecializationInfo: ptr::null(),
+            };
+
+            let shader_stages = [vert_stage_create_info, frag_stage_create_info];
+
+            let vert_input_state_create_info = VkPipelineVertexInputStateCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                // TODO fill this in for non-triangles
+                vertexBindingDescriptionCount: 0,
+                pVertexBindingDescriptions: ptr::null(),
+                vertexAttributeDescriptionCount: 0,
+                pVertexAttributeDescriptions: ptr::null(),
+            };
+
+            let pipe_input_assembly_state_create_info = VkPipelineInputAssemblyStateCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                topology: VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                primitiveRestartEnable: VK_FALSE,
+            };
+
+            let extent = self
+                .window
+                .as_ref()
+                .map(|w| w.swap_extent.clone())
+                .unwrap_or(VkExtent2D {
+                    width: 0,
+                    height: 0,
+                });
+
+            let viewport = VkViewport {
+                x: 0.0,
+                y: 0.0,
+                width: extent.width as f32,
+                height: extent.height as f32,
+                minDepth: 0.0,
+                maxDepth: 1.0,
+            };
+            let scissor = VkRect2D {
+                offset: mem::zeroed(),
+                extent: extent,
+            };
+            let pipe_viewport_state_create_info = VkPipelineViewportStateCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                // Technically the pointers here are not needed because of dynamic state, but covering bases
+                viewportCount: 1,
+                pViewports: [viewport].as_ptr(),
+                scissorCount: 1,
+                pScissors: [scissor].as_ptr(),
+            };
+
+            let dynamic_states = [VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR];
+            let pipe_dynamic_state_create_info = VkPipelineDynamicStateCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                dynamicStateCount: dynamic_states.len() as u32,
+                pDynamicStates: dynamic_states.as_ptr(),
+            };
+
+            let pipe_raster_state_create_info = VkPipelineRasterizationStateCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                depthClampEnable: VK_FALSE,
+                rasterizerDiscardEnable: VK_FALSE,
+                polygonMode: VK_POLYGON_MODE_FILL,
+                cullMode: VK_CULL_MODE_BACK_BIT as u32,
+                frontFace: VK_FRONT_FACE_CLOCKWISE,
+                depthBiasEnable: VK_FALSE,
+                depthBiasConstantFactor: 0.0,
+                depthBiasClamp: 0.0,
+                depthBiasSlopeFactor: 1.0,
+                lineWidth: 1.0,
+            };
+
+            let pipe_multisample_create_info = VkPipelineMultisampleStateCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                rasterizationSamples: VK_SAMPLE_COUNT_1_BIT,
+                sampleShadingEnable: VK_FALSE,
+                minSampleShading: 0.0,
+                pSampleMask: ptr::null(),
+                alphaToCoverageEnable: VK_FALSE,
+                alphaToOneEnable: VK_FALSE,
+            };
+
+            // TODO depth & stencil testing here
+
+            let pipe_color_blend_attachment_state = VkPipelineColorBlendAttachmentState {
+                blendEnable: VK_FALSE,
+                srcColorBlendFactor: 0,
+                dstColorBlendFactor: 0,
+                colorBlendOp: 0,
+                srcAlphaBlendFactor: 0,
+                dstAlphaBlendFactor: 0,
+                alphaBlendOp: 0,
+                colorWriteMask: (VK_COLOR_COMPONENT_R_BIT
+                    | VK_COLOR_COMPONENT_G_BIT
+                    | VK_COLOR_COMPONENT_B_BIT
+                    | VK_COLOR_COMPONENT_A_BIT) as u32,
+            };
+
+            let pipe_color_blend_state_create_info = VkPipelineColorBlendStateCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                logicOpEnable: VK_FALSE,
+                logicOp: VK_LOGIC_OP_COPY,
+                attachmentCount: 1,
+                pAttachments: &pipe_color_blend_attachment_state,
+                blendConstants: mem::zeroed(),
+            };
+
+            let pipe_layout_create_info = VkPipelineLayoutCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                setLayoutCount: 0,
+                pSetLayouts: ptr::null(),
+                pushConstantRangeCount: 0,
+                pPushConstantRanges: ptr::null(),
+            };
+            let mut pipe_layout = mem::zeroed();
+            check_vk(vkCreatePipelineLayout(
+                self.device,
+                &pipe_layout_create_info,
+                ptr::null_mut(),
+                &mut pipe_layout,
+            ))?;
+
+            // RENDERING CREATE INFO UNUSED
+            let swap_fmt = self
+                .window
+                .as_ref()
+                .map(|w| w.swap_fmt.clone())
+                .unwrap_or(VK_FORMAT_B8G8R8A8_UNORM);
+            let pipeline_rendering_create_info = VkPipelineRenderingCreateInfo {
+                sType: VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                pNext: ptr::null(),
+                viewMask: 0,
+                colorAttachmentCount: 1,
+                pColorAttachmentFormats: &swap_fmt,
+                depthAttachmentFormat: 0,
+                stencilAttachmentFormat: 0,
+            };
+
+            let pipeline_create_info = VkGraphicsPipelineCreateInfo {
+                sType: VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                stageCount: shader_stages.len() as u32,
+                pStages: shader_stages.as_ptr(),
+                pVertexInputState: &vert_input_state_create_info,
+                pInputAssemblyState: &pipe_input_assembly_state_create_info,
+                pTessellationState: ptr::null(),
+                pViewportState: &pipe_viewport_state_create_info,
+                pRasterizationState: &pipe_raster_state_create_info,
+                pMultisampleState: &pipe_multisample_create_info,
+                pDepthStencilState: ptr::null(),
+                pColorBlendState: &pipe_color_blend_state_create_info,
+                pDynamicState: &pipe_dynamic_state_create_info,
+                layout: pipe_layout,
+                renderPass: ptr::null_mut(),
+                subpass: 0,
+                basePipelineHandle: ptr::null_mut(),
+                basePipelineIndex: -1,
+            };
+
+            let pipeline_infos = [pipeline_create_info];
+            let mut pipeline = mem::zeroed();
+            check_vk(vkCreateGraphicsPipelines(
+                self.device,
+                ptr::null_mut(),
+                pipeline_infos.len() as u32,
+                pipeline_infos.as_ptr(),
+                ptr::null_mut(),
+                &mut pipeline,
+            ))?;
+
+            Ok(Pipeline { pipeline })
+        }
+    }
+
+    pub fn compile_shader(src_path: &str) -> Result<SpirvModule, ShaderCompileError> {
+        use shader_slang as slang;
+        let global_session = slang::GlobalSession::new().unwrap();
+        let session_options = slang::CompilerOptions::default()
+            .optimization(slang::OptimizationLevel::High)
+            .matrix_layout_column(true);
+
+        let target_desc = slang::TargetDesc::default()
+            .format(slang::CompileTarget::Spirv)
+            .profile(global_session.find_profile("spirv_1_4"));
+
+        let targets = [target_desc];
+        let search_paths = [];
+
+        let session_desc = slang::SessionDesc::default()
+            .targets(&targets)
+            .search_paths(&search_paths)
+            .options(&session_options);
+
+        let session = global_session
+            .create_session(&session_desc)
+            .expect("Unable to create slang session");
+        let module = session
+            .load_module(src_path)
+            .map_err(|e| ShaderCompileError::SlangCompileError(e))?;
+        /*
+        let entry_point = module
+            .find_entry_point_by_name("main")
+            .ok_or(ShaderCompileError::MissingEntryPoint)?;
+        let program = session
+            .create_composite_component_type(&[
+                module.downcast().clone(),
+                entry_point.downcast().clone(),
+            ])
+            .expect("Unable to create slang program");*/
+        let linked_program = module
+            .downcast()
+            .link()
+            .map_err(|e| ShaderCompileError::SlangLinkError(e))?;
+
+        let bytecode = linked_program
+            .target_code(0)
+            .expect("Unable to fetch shader bytecode")
+            .as_slice()
+            .to_vec();
+
+        Ok(SpirvModule { bytecode })
     }
 }
 
@@ -488,4 +819,28 @@ pub enum GraphicsCreateError {
 
 pub struct Surface {
     pub handle: VkSurfaceKHR,
+}
+
+pub struct SpirvModule {
+    pub bytecode: Vec<u8>,
+}
+
+#[derive(Error, Debug)]
+pub enum ShaderCompileError {
+    #[error("Slang failed to compile: `{0}`")]
+    SlangCompileError(shader_slang::Error),
+    #[error("Slang failed to link: `{0}`")]
+    SlangLinkError(shader_slang::Error),
+    #[error("Shader must have `main` function")]
+    MissingEntryPoint,
+}
+
+pub struct Pipeline {
+    pub pipeline: VkPipeline,
+}
+
+#[derive(Error, Debug)]
+pub enum PipelineCreateError {
+    #[error("Vulkan Error: `{0}`")]
+    VkError(#[from] VkError),
 }

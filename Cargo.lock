@@ -7,6 +7,7 @@ name = "ShitpostEngine"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "shader-slang",
  "thiserror 2.0.18",
  "vulkan_c",
  "windows",
@@ -207,6 +208,24 @@ name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+
+[[package]]
+name = "shader-slang"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f87ca0837663794c1d9db2c8c9383832557605a354a60ae754c7e56015596b7"
+dependencies = [
+ "shader-slang-sys",
+]
+
+[[package]]
+name = "shader-slang-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "279effb991b113c13e73108899aad05fabbf0d7a62b51c646ebad0512c40a1e3"
+dependencies = [
+ "bindgen",
+]
 
 [[package]]
 name = "shlex"
