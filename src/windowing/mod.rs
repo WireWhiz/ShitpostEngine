@@ -2,15 +2,18 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::AtomicBool;
 
+use glam::U16Vec2;
 use thiserror::Error;
-use windows::Win32::Foundation::{GetLastError, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    GetLastError, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+};
 use windows::Win32::System::LibraryLoader::{
     GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GetModuleHandleExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetMessageW,
-    GetWindowLongPtrW, RegisterClassExW, SW_SHOW, SetWindowLongPtrW, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WM_CREATE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    GetWindowLongPtrW, GetWindowRect, RegisterClassExW, SW_SHOW, SetWindowLongPtrW, ShowWindow,
+    TranslateMessage, WINDOW_EX_STYLE, WM_CREATE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::w;
 
@@ -22,6 +25,8 @@ pub struct Window {
     pub handle: HWND,
     pub hinstance: HINSTANCE,
     window_callback_state: Box<WindowProcState>,
+    pos: U16Vec2,
+    size: U16Vec2,
 }
 
 static WINDOW_CLASS_CREATED: AtomicBool = AtomicBool::new(false);
@@ -91,16 +96,18 @@ impl Window {
                 message: String::from("Hello window state"),
             });
 
+            let size = U16Vec2::new(1920, 1080);
+            let pos = U16Vec2::new(0, 0);
             let handle = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 w!("Shitpost Engine Class"),
                 w!("Shitpost engine"),
                 // Change this if we want fancy border in the future
                 WS_OVERLAPPEDWINDOW,
-                0,
-                0,
-                1920,
-                1080,
+                pos.x as i32,
+                pos.y as i32,
+                size.x as i32,
+                size.y as i32,
                 None,
                 None,
                 Some(hinstance),
@@ -119,6 +126,8 @@ impl Window {
                 handle,
                 window_callback_state,
                 hinstance,
+                pos,
+                size,
             })
         }
     }
@@ -130,7 +139,26 @@ impl Window {
                 let _did_translate = TranslateMessage(&mut msg);
                 let _res = DispatchMessageW(&msg);
             }
+
+            let mut rect = RECT::default();
+            let _ = GetWindowRect(self.handle, &mut rect);
+            self.pos = U16Vec2 {
+                x: rect.left as u16,
+                y: rect.right as u16,
+            };
+            self.size = U16Vec2 {
+                x: (rect.right - rect.left) as u16,
+                y: (rect.bottom - rect.top) as u16,
+            }
         }
+    }
+
+    pub fn resolution(&self) -> U16Vec2 {
+        self.size
+    }
+
+    pub fn pos(&self) -> U16Vec2 {
+        self.pos
     }
 }
 

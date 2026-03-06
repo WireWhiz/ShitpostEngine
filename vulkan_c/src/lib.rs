@@ -7,6 +7,8 @@
 
 #[cfg(target_os = "windows")]
 pub mod vk_win32;
+use std::{env, io::Write};
+
 #[cfg(target_os = "windows")]
 pub use vk_win32::*;
 
@@ -38,7 +40,11 @@ pub fn VK_MAKE_VERSION(major: u32, minor: u32, patch: u32) -> u32 {
 }
 
 pub fn check_vk(error: VkResult) -> Result<(), VkError> {
-    VkError::from_raw(error)?;
+    if cfg!(debug_assertions) && env::var("RUST_BACKTRACE").unwrap_or("0".into()) != "0" {
+        VkError::from_raw(error).expect("Vulkan error");
+    } else {
+        VkError::from_raw(error)?;
+    }
     Ok(())
 }
 
@@ -164,10 +170,10 @@ pub enum VkError {
 impl VkError {
     pub fn from_raw(result: VkResult) -> Result<VkResult, VkError> {
         // Positive/zero values are success or informational — not errors
-        if result.0 >= 0 {
+        if result >= 0 {
             return Ok(result);
         }
-        Err(match result.0 {
+        Err(match result {
             -1 => VkError::OutOfHostMemory,
             -2 => VkError::OutOfDeviceMemory,
             -3 => VkError::InitializationFailed,

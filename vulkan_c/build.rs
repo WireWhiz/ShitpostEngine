@@ -41,12 +41,9 @@ fn main() {
         .header(wrapper)
         .clang_arg(format!("-I{}", vulkan_include.display()))
         // Represent enums as constants (matches Vulkan's C style)
-        .default_enum_style(bindgen::EnumVariation::NewType {
-            is_bitfield: false,
-            is_global: false,
-        })
-        // Keep Vulkan's naming conventions intact
+        .default_enum_style(bindgen::EnumVariation::Consts)
         .prepend_enum_name(false)
+        .translate_enum_integer_types(true)
         // Generate layout tests so you catch ABI mismatches early
         .layout_tests(true)
         // Block everything but vulkan types
