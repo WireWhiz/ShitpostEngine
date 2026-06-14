@@ -16,10 +16,13 @@ pub struct WindowCtx {
     pub present_queue: VkQueue,
     pub swapchain: VkSwapchainKHR,
     pub swap_images: Vec<VkImage>,
-    pub swap_view_create_infos: Vec<VkImageViewCreateInfo>,
+    pub swap_views: Vec<VkImageView>,
     pub swap_fmt: VkFormat,
     pub swap_color_space: VkColorSpaceKHR,
     pub swap_extent: VkExtent2D,
+    pub present_command_pool: VkCommandPool,
+
+    pub present_complete_sems: Vec<VkSemaphore>,
 }
 
 pub struct Graphics {
@@ -28,6 +31,11 @@ pub struct Graphics {
     pub device: VkDevice,
     pub graphics_queue: VkQueue,
     pub window: Option<WindowCtx>,
+    pub graphics_command_pool: VkCommandPool,
+    pub transfer_command_pool: VkCommandPool,
+    pub render_buffer: VkCommandBuffer,
+    pub render_finished: VkSemaphore,
+    pub draw_fence: VkFence,
 }
 
 impl Graphics {
@@ -417,105 +425,144 @@ impl Graphics {
                         &mut present_queue,
                     );
 
-                    let mut surface_caps = mem::zeroed();
-                    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &mut surface_caps);
-
                     let size = window.resolution();
                     let swap_extent = VkExtent2D {
                         width: size.x as u32,
                         height: size.y as u32,
                     };
 
-                    let swapchain_create_info = VkSwapchainCreateInfoKHR {
-                        sType: VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-                        pNext: ptr::null(),
-                        flags: 0,
+                    let (swapchain, swap_extent) = Self::create_swapchain(
+                        device,
+                        gpu,
                         surface,
-                        minImageCount: surface_caps.minImageCount + 1,
-                        imageFormat: swapchain_fmt,
-                        imageColorSpace: swapchain_color_space,
-                        imageExtent: swap_extent,
-                        imageArrayLayers: 1,
-                        imageUsage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
-                        imageSharingMode: VK_SHARING_MODE_EXCLUSIVE,
-                        // We only have to set queue families if the mode is not exclusive
-                        queueFamilyIndexCount: 0,
-                        pQueueFamilyIndices: ptr::null(),
-                        preTransform: surface_caps.currentTransform,
-                        compositeAlpha: VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-                        // Vsync option
-                        presentMode: VK_PRESENT_MODE_IMMEDIATE_KHR,
-                        clipped: VK_TRUE,
-                        oldSwapchain: ptr::null_mut(),
-                    };
+                        swap_extent,
+                        swapchain_fmt,
+                        swapchain_color_space,
+                        None,
+                    )?;
 
-                    let mut swapchain = mem::zeroed();
-                    check_vk(vkCreateSwapchainKHR(
-                        device,
-                        &swapchain_create_info,
-                        ptr::null(),
-                        &mut swapchain,
-                    ))?;
+                    let (swap_images, swap_views) =
+                        Self::create_swap_views(device, swapchain, swapchain_fmt)?;
 
-                    let mut swap_image_count = 0;
-                    check_vk(vkGetSwapchainImagesKHR(
-                        device,
-                        swapchain,
-                        &mut swap_image_count,
-                        ptr::null_mut(),
-                    ))?;
-                    let mut swap_images = Vec::with_capacity(swap_image_count as usize);
-                    check_vk(vkGetSwapchainImagesKHR(
-                        device,
-                        swapchain,
-                        &mut swap_image_count,
-                        swap_images.as_mut_ptr(),
-                    ))?;
-                    swap_images.set_len(swap_image_count as usize);
-
-                    let mut swap_view_create_infos = Vec::with_capacity(swap_image_count as usize);
-                    let mut swap_view_create_info = VkImageViewCreateInfo {
-                        sType: VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                        pNext: ptr::null(),
-                        flags: 0,
-                        image: ptr::null_mut(),
-                        viewType: VK_IMAGE_VIEW_TYPE_2D,
-                        format: swapchain_fmt,
-                        components: VkComponentMapping {
-                            r: VK_COMPONENT_SWIZZLE_IDENTITY,
-                            g: VK_COMPONENT_SWIZZLE_IDENTITY,
-                            b: VK_COMPONENT_SWIZZLE_IDENTITY,
-                            a: VK_COMPONENT_SWIZZLE_IDENTITY,
-                        },
-                        subresourceRange: VkImageSubresourceRange {
-                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT as u32,
-                            baseMipLevel: 0,
-                            levelCount: 1,
-                            baseArrayLayer: 0,
-                            layerCount: 1,
-                        },
-                    };
-                    for image in &swap_images {
-                        swap_view_create_info.image = image.clone();
-                        swap_view_create_infos.push(swap_view_create_info.clone());
-                    }
                     println!("created swapchain!");
+
+                    let command_pool_create_info = VkCommandPoolCreateInfo {
+                        sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                        pNext: ptr::null(),
+                        flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT as u32,
+                        queueFamilyIndex: queue_family_index as u32,
+                    };
+                    let mut present_command_pool = mem::zeroed();
+                    check_vk(vkCreateCommandPool(
+                        device,
+                        &command_pool_create_info,
+                        ptr::null(),
+                        &mut present_command_pool,
+                    ))?;
+
+                    let mut present_complete_sems = Vec::with_capacity(swap_images.len());
+                    for _ in 0..swap_images.len() {
+                        let mut present_complete = mem::zeroed();
+                        check_vk(vkCreateSemaphore(
+                            device,
+                            &VkSemaphoreCreateInfo {
+                                sType: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                pNext: ptr::null(),
+                                flags: 0,
+                            },
+                            ptr::null_mut(),
+                            &mut present_complete,
+                        ))?;
+                        present_complete_sems.push(present_complete);
+                    }
 
                     Some(WindowCtx {
                         surface,
                         present_queue,
                         swapchain,
                         swap_images,
-                        swap_view_create_infos,
                         swap_fmt: swapchain_fmt,
                         swap_color_space: swapchain_color_space,
+                        present_command_pool,
+                        swap_views,
                         swap_extent,
+                        present_complete_sems,
                     })
                 } else {
                     None
                 };
 
-            // Create main graphics pipeline
+            let graphics_command_pool_create_info = VkCommandPoolCreateInfo {
+                sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT as u32,
+                queueFamilyIndex: graphics_queue_family_index as u32,
+            };
+            let mut graphics_command_pool = mem::zeroed();
+            check_vk(vkCreateCommandPool(
+                device,
+                &graphics_command_pool_create_info,
+                ptr::null(),
+                &mut graphics_command_pool,
+            ))?;
+
+            let transfer_command_pool_create_info = VkCommandPoolCreateInfo {
+                sType: VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT as u32,
+                queueFamilyIndex: transfer_queue_family_index as u32,
+            };
+            let mut transfer_command_pool = mem::zeroed();
+            check_vk(vkCreateCommandPool(
+                device,
+                &transfer_command_pool_create_info,
+                ptr::null(),
+                &mut transfer_command_pool,
+            ))?;
+
+            let buffer_allocate_info = VkCommandBufferAllocateInfo {
+                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                pNext: ptr::null(),
+                commandPool: graphics_command_pool,
+                level: VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                commandBufferCount: 1,
+            };
+            let mut render_buffer = mem::zeroed();
+            check_vk(vkAllocateCommandBuffers(
+                device,
+                &buffer_allocate_info,
+                &mut render_buffer,
+            ))?;
+
+            println!("Created command buffer & pools");
+
+            let mut render_finished = mem::zeroed();
+            let mut draw_fence = mem::zeroed();
+
+            check_vk(vkCreateSemaphore(
+                device,
+                &VkSemaphoreCreateInfo {
+                    sType: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                    pNext: ptr::null(),
+                    flags: 0,
+                },
+                ptr::null_mut(),
+                &mut render_finished,
+            ))?;
+
+            check_vk(vkCreateFence(
+                device,
+                &VkFenceCreateInfo {
+                    sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                    pNext: ptr::null(),
+                    // Allow the fence through the first time
+                    flags: VK_FENCE_CREATE_SIGNALED_BIT as u32,
+                },
+                ptr::null_mut(),
+                &mut draw_fence,
+            ))?;
+
+            println!("Created sync primitives");
 
             Ok(Graphics {
                 instance,
@@ -523,8 +570,157 @@ impl Graphics {
                 device,
                 window,
                 graphics_queue,
+                graphics_command_pool,
+                transfer_command_pool,
+                render_buffer,
+                render_finished,
+                draw_fence,
             })
         }
+    }
+
+    pub fn create_swapchain(
+        device: VkDevice,
+        physical_device: VkPhysicalDevice,
+        surface: VkSurfaceKHR,
+        extent: VkExtent2D,
+        fmt: VkFormat,
+        color_space: VkColorSpaceKHR,
+        old_swapchian: Option<VkSwapchainKHR>,
+    ) -> Result<(VkSwapchainKHR, VkExtent2D), VkError> {
+        unsafe {
+            let mut surface_caps = mem::zeroed();
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &mut surface_caps);
+
+            let c_extent = surface_caps.currentExtent;
+            let extent = if c_extent.width == 0xFFFFFFFF && c_extent.height == 0xFFFFFFFF {
+                extent
+            } else {
+                c_extent
+            };
+
+            let swapchain_create_info = VkSwapchainCreateInfoKHR {
+                sType: VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                pNext: ptr::null(),
+                flags: 0,
+                surface,
+                minImageCount: surface_caps.minImageCount + 1,
+                imageFormat: fmt,
+                imageColorSpace: color_space,
+                imageExtent: extent,
+                imageArrayLayers: 1,
+                imageUsage: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT as u32,
+                imageSharingMode: VK_SHARING_MODE_EXCLUSIVE,
+                // We only have to set queue families if the mode is not exclusive
+                queueFamilyIndexCount: 0,
+                pQueueFamilyIndices: ptr::null(),
+                preTransform: surface_caps.currentTransform,
+                compositeAlpha: VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                // Vsync option
+                presentMode: VK_PRESENT_MODE_IMMEDIATE_KHR,
+                clipped: VK_TRUE,
+                oldSwapchain: old_swapchian.unwrap_or(ptr::null_mut()),
+            };
+
+            let mut swapchain = mem::zeroed();
+            check_vk(vkCreateSwapchainKHR(
+                device,
+                &swapchain_create_info,
+                ptr::null(),
+                &mut swapchain,
+            ))?;
+            Ok((swapchain, extent))
+        }
+    }
+
+    pub fn create_swap_views(
+        device: VkDevice,
+        swapchain: VkSwapchainKHR,
+        fmt: VkFormat,
+    ) -> Result<(Vec<VkImage>, Vec<VkImageView>), VkError> {
+        unsafe {
+            let mut swap_image_count = 0;
+            check_vk(vkGetSwapchainImagesKHR(
+                device,
+                swapchain,
+                &mut swap_image_count,
+                ptr::null_mut(),
+            ))?;
+            let mut swap_images = Vec::with_capacity(swap_image_count as usize);
+            check_vk(vkGetSwapchainImagesKHR(
+                device,
+                swapchain,
+                &mut swap_image_count,
+                swap_images.as_mut_ptr(),
+            ))?;
+            swap_images.set_len(swap_image_count as usize);
+
+            let mut swap_view_create_infos = Vec::with_capacity(swap_image_count as usize);
+            let mut swap_view_create_info = VkImageViewCreateInfo {
+                sType: VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                image: ptr::null_mut(),
+                viewType: VK_IMAGE_VIEW_TYPE_2D,
+                format: fmt,
+                components: VkComponentMapping {
+                    r: VK_COMPONENT_SWIZZLE_IDENTITY,
+                    g: VK_COMPONENT_SWIZZLE_IDENTITY,
+                    b: VK_COMPONENT_SWIZZLE_IDENTITY,
+                    a: VK_COMPONENT_SWIZZLE_IDENTITY,
+                },
+                subresourceRange: VkImageSubresourceRange {
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                    baseMipLevel: 0,
+                    levelCount: 1,
+                    baseArrayLayer: 0,
+                    layerCount: 1,
+                },
+            };
+            let mut swap_views = Vec::with_capacity(swap_image_count as usize);
+            for image in &swap_images {
+                swap_view_create_info.image = image.clone();
+                swap_view_create_infos.push(swap_view_create_info.clone());
+                let mut image_view = mem::zeroed();
+                check_vk(vkCreateImageView(
+                    device,
+                    &swap_view_create_info,
+                    ptr::null_mut(),
+                    &mut image_view,
+                ))?;
+                swap_views.push(image_view);
+            }
+            Ok((swap_images, swap_views))
+        }
+    }
+
+    pub fn recreate_swap_chain(&mut self) -> Result<(), VkError> {
+        unsafe {
+            let Some(window) = &mut self.window else {
+                return Ok(());
+            };
+            for view in &mut window.swap_views {
+                vkDestroyImageView(self.device, *view, ptr::null_mut());
+            }
+            window.swap_views.clear();
+
+            let (swapchain, extent) = Self::create_swapchain(
+                self.device,
+                self.gpu,
+                window.surface,
+                window.swap_extent,
+                window.swap_fmt,
+                window.swap_color_space,
+                Some(window.swapchain),
+            )?;
+            window.swapchain = swapchain;
+            window.swap_extent = extent;
+            let (swap_images, swap_views) =
+                Self::create_swap_views(self.device, window.swapchain, window.swap_fmt)?;
+            window.swap_images = swap_images;
+            window.swap_views = swap_views;
+        }
+        Ok(())
     }
 
     pub fn load_material(&mut self, shader: &SpirvModule) -> Result<Pipeline, PipelineCreateError> {
@@ -799,6 +995,253 @@ impl Graphics {
             .to_vec();
 
         Ok(SpirvModule { bytecode })
+    }
+
+    pub fn render_to_window(&mut self, pipeline: &Pipeline, frame: usize) -> Result<(), VkError> {
+        unsafe {
+            // Wait for last frame to complete
+            println!("Wait for last frame");
+            check_vk(vkWaitForFences(
+                self.device,
+                1,
+                &self.draw_fence,
+                VK_TRUE,
+                u64::MAX,
+            ))?;
+            let window = self
+                .window
+                .as_mut()
+                .expect("Can't render to window when no windows");
+
+            println!("Acquiring image");
+            let mut image_index = 0;
+            if let Err(err) = check_vk(vkAcquireNextImageKHR(
+                self.device,
+                window.swapchain,
+                u64::MAX,
+                window.present_complete_sems[frame % window.present_complete_sems.len()],
+                ptr::null_mut(),
+                &mut image_index,
+            )) {
+                match err {
+                    VkError::OutOfDate => {
+                        println!("Swapchain was out of date, recreating");
+                        check_vk(vkDeviceWaitIdle(self.device))?;
+                        self.recreate_swap_chain()?;
+                        return Ok(());
+                    }
+                    err => panic!("Failed to aquire next image {}", err),
+                }
+            };
+            let image_index = image_index as usize;
+
+            println!("Begining render");
+
+            let cmd = self.render_buffer;
+            check_vk(vkBeginCommandBuffer(
+                cmd,
+                &VkCommandBufferBeginInfo {
+                    sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                    pNext: ptr::null(),
+                    flags: 0,
+                    pInheritanceInfo: ptr::null(),
+                },
+            ))?;
+
+            // put frame in write mode
+            self.transition_output_image_layout(
+                cmd,
+                image_index,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                0,
+                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT as u64,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            );
+
+            let window = self
+                .window
+                .as_mut()
+                .expect("Can't render to window when no windows");
+
+            let color_attachment_info = VkRenderingAttachmentInfo {
+                sType: VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                pNext: ptr::null(),
+                imageView: window.swap_views[image_index],
+                imageLayout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                resolveMode: 0,
+                resolveImageView: ptr::null_mut(),
+                resolveImageLayout: 0,
+                loadOp: VK_ATTACHMENT_LOAD_OP_CLEAR,
+                storeOp: VK_ATTACHMENT_STORE_OP_STORE,
+                clearValue: VkClearValue {
+                    color: VkClearColorValue {
+                        float32: [0.0, 0.0, 0.0, 0.0],
+                    },
+                },
+            };
+
+            let rendering_info = VkRenderingInfo {
+                sType: VK_STRUCTURE_TYPE_RENDERING_INFO,
+                pNext: ptr::null(),
+                flags: 0,
+                renderArea: VkRect2D {
+                    offset: VkOffset2D { x: 0, y: 0 },
+                    extent: window.swap_extent.clone(),
+                },
+                layerCount: 1,
+                viewMask: 0,
+                colorAttachmentCount: 1,
+                pColorAttachments: &color_attachment_info,
+                pDepthAttachment: ptr::null(),
+                pStencilAttachment: ptr::null(),
+            };
+
+            vkCmdBeginRendering(cmd, &rendering_info);
+
+            // RENDER TIME
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
+            vkCmdSetViewport(
+                cmd,
+                0,
+                1,
+                &VkViewport {
+                    x: 0.0,
+                    y: 0.0,
+                    width: window.swap_extent.width as f32,
+                    height: window.swap_extent.height as f32,
+                    minDepth: 0.0,
+                    maxDepth: 1.1,
+                },
+            );
+            vkCmdSetScissor(
+                cmd,
+                0,
+                1,
+                &VkRect2D {
+                    offset: VkOffset2D { x: 0, y: 0 },
+                    extent: window.swap_extent.clone(),
+                },
+            );
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+
+            vkCmdEndRendering(cmd);
+            self.transition_output_image_layout(
+                cmd,
+                image_index,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                0,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            );
+            check_vk(vkEndCommandBuffer(cmd))?;
+
+            check_vk(vkResetFences(self.device, 1, &self.draw_fence))?;
+
+            let window = self
+                .window
+                .as_mut()
+                .expect("Can't render to window when no windows");
+
+            let wait_destination_stage_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT as u32;
+            let submit_info = VkSubmitInfo {
+                sType: VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                pNext: ptr::null(),
+                waitSemaphoreCount: 1,
+                pWaitSemaphores: &window.present_complete_sems
+                    [frame % window.present_complete_sems.len()],
+                pWaitDstStageMask: &wait_destination_stage_mask,
+                commandBufferCount: 1,
+                pCommandBuffers: &cmd,
+                signalSemaphoreCount: 1,
+                pSignalSemaphores: &self.render_finished,
+            };
+
+            check_vk(vkQueueSubmit(
+                self.graphics_queue,
+                1,
+                &submit_info,
+                self.draw_fence,
+            ))?;
+
+            let present_index = image_index as u32;
+            let present_info = VkPresentInfoKHR {
+                sType: VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                pNext: ptr::null(),
+                waitSemaphoreCount: 1,
+                pWaitSemaphores: &self.render_finished,
+                swapchainCount: 1,
+                pSwapchains: &window.swapchain,
+                pImageIndices: &present_index,
+                pResults: ptr::null_mut(),
+            };
+            if let Err(err) = check_vk(vkQueuePresentKHR(window.present_queue, &present_info)) {
+                match err {
+                    VkError::OutOfDate => {
+                        println!("Swapchain was out of date, recreating");
+                        check_vk(vkDeviceWaitIdle(self.device))?;
+                        self.recreate_swap_chain()?;
+                        return Ok(());
+                    }
+                    err => panic!("Failed to present image {}", err),
+                }
+            };
+            println!("Rendered frame?");
+        }
+        Ok(())
+    }
+
+    pub fn transition_output_image_layout(
+        &mut self,
+        cmd: VkCommandBuffer,
+        image_index: usize,
+        old_layout: VkImageLayout,
+        new_layout: VkImageLayout,
+        src_access_mask: VkAccessFlags2,
+        dst_access_mask: VkAccessFlags2,
+        src_stage_mask: VkPipelineStageFlags2,
+        dst_stage_mask: VkPipelineStageFlags2,
+    ) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let barrier = VkImageMemoryBarrier2 {
+            sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            pNext: ptr::null(),
+            srcStageMask: src_stage_mask,
+            srcAccessMask: src_access_mask,
+            dstStageMask: dst_stage_mask,
+            dstAccessMask: dst_access_mask,
+            oldLayout: old_layout,
+            newLayout: new_layout,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED as u32,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED as u32,
+            image: window.swap_images[image_index],
+            subresourceRange: VkImageSubresourceRange {
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT as u32,
+                baseMipLevel: 0,
+                levelCount: 1,
+                baseArrayLayer: 0,
+                layerCount: 1,
+            },
+        };
+        let dependency_info = VkDependencyInfo {
+            sType: VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            pNext: ptr::null(),
+            dependencyFlags: 0,
+            imageMemoryBarrierCount: 1,
+            pImageMemoryBarriers: &barrier,
+            memoryBarrierCount: 0,
+            pMemoryBarriers: ptr::null(),
+            bufferMemoryBarrierCount: 0,
+            pBufferMemoryBarriers: ptr::null(),
+        };
+        unsafe {
+            vkCmdPipelineBarrier2(cmd, &dependency_info);
+        }
     }
 }
 

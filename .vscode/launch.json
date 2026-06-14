@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "codelldb",
+            "request": "launch",
+            "name": "Engine Debug",
+            "preLaunchTask": "cargo-build-debug",
+            "program": "${workspaceFolder}/target/debug/root",
+            "sourceLanguages": [
+                "rust"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/target/debug/",
+            "args": [
+                "${workspaceFolder}/exampleScripts/test.bscript"
+            ]
+        }
+    ]
+}

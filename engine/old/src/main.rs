@@ -1,7 +1,9 @@
 use crate::{graphics::Graphics, windowing::Window};
 
 mod graphics;
+mod resources;
 mod windowing;
+mod world;
 
 fn main() {
     // Boot up game
@@ -16,9 +18,15 @@ fn main() {
     let main_mat = graphics
         .load_material(&main_shader)
         .expect("Failed to load main shader");
+
     println!("Created pipeline for main shader!");
 
     loop {
+        println!("Updating window");
         window.update();
+        println!("rendering");
+        graphics
+            .render_to_window(&main_mat, 1)
+            .expect("Frame render failed");
     }
 }

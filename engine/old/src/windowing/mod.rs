@@ -12,8 +12,9 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, RegisterClassExW, SW_SHOW, SetWindowLongPtrW, ShowWindow,
-    TranslateMessage, WINDOW_EX_STYLE, WM_CREATE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    GetWindowLongPtrW, GetWindowRect, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_SHOW,
+    SetWindowLongPtrW, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CREATE, WNDCLASSEXW,
+    WS_OVERLAPPEDWINDOW,
 };
 use windows::core::w;
 
@@ -135,7 +136,7 @@ impl Window {
     pub fn update(&mut self) {
         let mut msg = windows::Win32::UI::WindowsAndMessaging::MSG::default();
         unsafe {
-            while GetMessageW(&mut msg, Some(self.handle), 0, 0).as_bool() {
+            while PeekMessageW(&mut msg, Some(self.handle), 0, 0, PM_REMOVE).as_bool() {
                 let _did_translate = TranslateMessage(&mut msg);
                 let _res = DispatchMessageW(&msg);
             }
