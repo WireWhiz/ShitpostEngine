@@ -49,14 +49,10 @@ pub fn register_all_modules(input: TokenStream) -> TokenStream {
             if ext == "rs" {
                 let path_lit = LitStr::new(p.to_str().unwrap(), args.modules_path.span());
                 let module_str = p.file_stem().unwrap().to_str().unwrap();
-                let module_ident = Ident::new(
-                    module_str,
-                    args.modules_path.span(),
-                );
+                let module_ident = Ident::new(module_str, args.modules_path.span());
                 static_module_names.push(LitStr::new(module_str, args.modules_path.span()));
                 static_module_idents.push(module_ident.clone());
                 output.extend(TokenStream::from(quote! {
-                    #[cfg(feature = "static_modules")]
                     #[path = #path_lit]
                     mod #module_ident;
                 }));
@@ -70,7 +66,6 @@ pub fn register_all_modules(input: TokenStream) -> TokenStream {
     });
 
     output.extend(TokenStream::from(quote! {
-        #[cfg(feature = "static_modules")]
         fn static_module_handles() -> std::vec::Vec<Box<dyn brane_weaver::ModuleHandle>> {
             let mut modules = std::vec::Vec::new();
 
@@ -79,10 +74,6 @@ pub fn register_all_modules(input: TokenStream) -> TokenStream {
             )*
 
             modules
-        }
-        #[cfg(not(feature = "static_modules"))]
-        fn static_module_handles() -> std::vec::Vec<Box<dyn brane_weaver::ModuleHandle>> {
-            std::vec::Vec::new();
         }
     }));
 

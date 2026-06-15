@@ -3,7 +3,9 @@ use clap::Parser;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Result, Watcher};
 use serde::{Deserialize, Serialize};
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
+    process::Command,
     sync::mpsc,
 };
 use websocket::OwnedMessage;
@@ -16,18 +18,28 @@ pub mod server_api;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// The project directory to weave
-    project_dir: String,
+    /// The engine source code location
+    engine_dir: String,
 
-    /// Should brane weave contuniue running and provide updates to the binary
-    #[arg(short, long, default_value_t = false)]
-    continuous: bool,
+    /// Should brane weave contuniue running and provide updates to the binary, but not launch
+    /// any child processes
+    #[arg(long, default_value_t = false)]
+    watch: bool,
+
+    /// Launch the brane editor and provide hot-reload support
+    #[arg(long, default_value_t = false)]
+    editor: bool,
+    /*
+    /// Launch the brane client and provide hot-reload support
+    #[arg(long, default_value_t = false)]
+    client: bool,
+    */
 }
 
 fn main() {
     let args = Args::parse();
 
-    let mut update_server = websocket::sync::Server::bind("localhost:2001").unwrap();
+    let update_server = websocket::sync::Server::bind("localhost:2001").unwrap();
     let mut clients = Vec::new();
     let (clients_tx, clients_rx) = mpsc::channel();
     let accept_thread = std::thread::spawn(move || {
@@ -35,19 +47,50 @@ fn main() {
             let Ok(connection) = connection else {
                 continue;
             };
-            clients_tx.send(connection.accept().unwrap());
+            let _ = clients_tx.send(connection.accept().unwrap());
         }
     });
 
     let (tx, rx) = mpsc::channel::<Result<Event>>();
     let mut watcher: RecommendedWatcher = notify::recommended_watcher(tx).unwrap();
 
-    // Add a path to be watched. All files and directories at that path and below will be monitored for changes.
-    watcher
-        .watch(Path::new(&args.project_dir), RecursiveMode::Recursive)
+    let engine_dir = PathBuf::from(&args.engine_dir).canonicalize().unwrap();
+
+    let modules_dir = engine_dir.join("brane_runtime").join("modules");
+    let editor_dir = engine_dir.join("brane_editor");
+    let _client_dir = engine_dir.join("brane_editor");
+    let _server_dir = engine_dir.join("brane_server");
+
+    Command::new("cargo")
+        .args(vec!["build"])
+        .current_dir(&engine_dir)
+        .spawn()
+        .expect("Failed to cargo build")
+        .wait_with_output()
         .unwrap();
 
-    println!("Watching {}. Press Ctrl+C to exit.", args.project_dir);
+    let hotreload_dir = engine_dir.join("target").join("hotreload");
+    std::fs::create_dir_all(&hotreload_dir).unwrap();
+    copy_stdlib(&hotreload_dir);
+
+    let editor_process = if args.editor {
+        Some(
+            Command::new("cargo")
+                .args(vec!["run", "--bin", "brane_editor"])
+                .current_dir(engine_dir)
+                .spawn()
+                .expect("Failed to start child process"),
+        )
+    } else {
+        None
+    };
+
+    // Add a path to be watched. All files and directories at that path and below will be monitored for changes.
+    watcher
+        .watch(Path::new(&modules_dir), RecursiveMode::Recursive)
+        .unwrap();
+
+    println!("Watching {}. Press Ctrl+C to exit.", args.engine_dir);
     let mut lib_count = 0;
     for res in rx {
         while let Ok(new_client) = clients_rx.try_recv() {
@@ -68,20 +111,12 @@ fn main() {
                             let module_name =
                                 path.file_stem().unwrap().to_str().unwrap().to_string();
                             let lib_name = versioned_artifact_name(&module_name, lib_count);
-                            std::fs::create_dir_all("target/hotreload").unwrap();
-                            let lib_path = std::path::Path::new("target/hotreload")
-                                .canonicalize()
-                                .unwrap()
-                                .join(lib_name)
-                                .to_str()
-                                .unwrap()
-                                .trim_start_matches(r"\\?\")
-                                .to_string();
+                            let lib_path = hotreload_dir.join(lib_name);
                             lib_count += 1;
 
                             //Try compile
                             let res = compile(CompileJob {
-                                source: path.to_str().unwrap().to_string(),
+                                source: path,
                                 output: lib_path.clone(),
                                 crate_name: module_name.clone(),
                                 extern_flags: vec![
@@ -102,10 +137,9 @@ fn main() {
                                     "dependency=target/debug/deps".into(),
                                     "dependency=target/debug".into(),
                                 ],
-                                incremental_dir: format!(
-                                    "target/hotreload/incremental/{}",
-                                    module_name
-                                ),
+                                incremental_dir: hotreload_dir
+                                    .join("incremental")
+                                    .join(&module_name),
                             });
                             println!(
                                 "compiled with result {} in {}ms",
@@ -113,10 +147,10 @@ fn main() {
                             );
                             println!("{}", res.diagnostics);
                             if res.success {
-                                println!("Emitted {}", lib_path);
+                                println!("Emitted {}", lib_path.display());
                                 let msg = WeaverMessage::ReloadModule {
                                     module_name,
-                                    dynamic_lib_path: lib_path,
+                                    dynamic_lib_path: lib_path.to_string_lossy().into(),
                                 };
                                 let msg = OwnedMessage::Text(serde_json::to_string(&msg).unwrap());
                                 for client in &mut clients {
@@ -132,6 +166,12 @@ fn main() {
             Err(e) => println!("watch error: {:?}", e),
         }
     }
+
+    if let Some(ep) = editor_process {
+        ep.wait_with_output().unwrap();
+    }
+
+    accept_thread.join().unwrap();
 }
 
 fn dylib_extension() -> &'static str {
@@ -149,12 +189,12 @@ fn versioned_artifact_name(name: &str, version: u64) -> PathBuf {
 
 #[derive(Deserialize)]
 struct CompileJob {
-    source: String,
-    output: String,
+    source: PathBuf,
+    output: PathBuf,
     crate_name: String,
     extern_flags: Vec<(String, String)>, // (name, path) pairs
     search_paths: Vec<String>,
-    incremental_dir: String,
+    incremental_dir: PathBuf,
 }
 
 #[derive(Serialize, Debug)]
@@ -178,7 +218,10 @@ fn compile(job: CompileJob) -> CompileResult {
         .args(["-C", "opt-level=0"])
         .args(["-C", "prefer-dynamic"])
         //.args(["-C", "debuginfo=0"])
-        .args(["-C", &format!("incremental={}", job.incremental_dir)]);
+        .args([
+            "-C",
+            &format!("incremental={}", job.incremental_dir.display()),
+        ]);
 
     // Cranelift where supported
     if let Some(backend) = codegen_backend() {
@@ -193,11 +236,13 @@ fn compile(job: CompileJob) -> CompileResult {
         cmd.arg("-L").arg(path);
     }
 
-    cmd.args(["-o", &job.output, &job.source]);
+    cmd.args([
+        OsStr::new("-o"),
+        job.output.as_os_str(),
+        job.source.as_os_str(),
+    ]);
 
     let output = cmd.output().unwrap();
-
-    copy_stdlib(target_dir);
 
     CompileResult {
         success: output.status.success(),

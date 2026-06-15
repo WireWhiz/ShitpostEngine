@@ -1,0 +1,8 @@
+[package]
+name = "brane_editor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+brane_runtime = { path = "../brane_runtime/" }
+brane_weaver = { path = "../brane_weaver/" }

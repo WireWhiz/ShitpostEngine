@@ -2,9 +2,11 @@
 resolver = "3"
 members = [
     "brane_weaver",
-    "proc_brane_weaver",
-    "engine/root",
-    "engine/cargodeps",
+    "brane_weaver_proc",
+    "brane_runtime",
+    "brane_editor",
+    "brane_runtime/cargodeps", 
+    "brane_client", 
 ]
 
-exclude = [ "engine/old" ]
+exclude = [ "old" ]

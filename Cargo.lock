@@ -126,6 +126,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "brane_client"
+version = "0.1.0"
+dependencies = [
+ "brane_runtime",
+]
+
+[[package]]
+name = "brane_editor"
+version = "0.1.0"
+dependencies = [
+ "brane_runtime",
+ "brane_weaver",
+]
+
+[[package]]
+name = "brane_runtime"
+version = "0.1.0"
+dependencies = [
+ "brane_weaver",
+ "brane_weaver_proc",
+ "cargodeps",
+]
+
+[[package]]
 name = "brane_weaver"
 version = "0.1.0"
 dependencies = [
@@ -135,6 +159,15 @@ dependencies = [
  "serde",
  "serde_json",
  "websocket",
+]
+
+[[package]]
+name = "brane_weaver_proc"
+version = "0.1.0"
+dependencies = [
+ "derive-syn-parse",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -880,15 +913,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc_brane_weaver"
-version = "0.1.0"
-dependencies = [
- "derive-syn-parse",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1023,15 +1047,6 @@ name = "redox_syscall"
 version = "0.1.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41cc0f7e4d5d4544e8861606a285bb08d3e70712ccc7d2b84d7c0ccfaf4b05ce"
-
-[[package]]
-name = "root"
-version = "0.1.0"
-dependencies = [
- "brane_weaver",
- "cargodeps",
- "proc_brane_weaver",
-]
 
 [[package]]
 name = "rustc_version"
