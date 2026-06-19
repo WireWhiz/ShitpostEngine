@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "brane_weaver",
-    "brane_weaver_proc",
+    "brane_weaver/proc",
     "brane_runtime",
     "brane_editor",
     "brane_runtime/cargodeps", 

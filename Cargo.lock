@@ -144,15 +144,25 @@ dependencies = [
 name = "brane_runtime"
 version = "0.1.0"
 dependencies = [
+ "brane_runtime_proc",
  "brane_weaver",
- "brane_weaver_proc",
  "cargodeps",
+]
+
+[[package]]
+name = "brane_runtime_proc"
+version = "0.1.0"
+dependencies = [
+ "derive-syn-parse",
+ "quote",
+ "syn",
 ]
 
 [[package]]
 name = "brane_weaver"
 version = "0.1.0"
 dependencies = [
+ "brane_weaver_proc",
  "clap",
  "libloading",
  "notify",

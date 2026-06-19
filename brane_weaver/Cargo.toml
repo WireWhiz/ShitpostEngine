@@ -9,6 +9,7 @@ name = "weaver_server"
 [lib]
 
 [dependencies]
+brane_weaver_proc = { path="proc" }
 clap = { version = "4.6.1", features = ["derive"] }
 libloading = "0.9.0"
 notify = "8.2.0"

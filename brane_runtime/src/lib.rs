@@ -1,9 +1,12 @@
+brane_weaver::proc::register_all_modules!("modules/");
 
-brane_weaver_proc::register_all_modules!("modules/");
+pub mod meta_type;
+pub mod task;
 
-pub struct Runtime {
-}
+pub struct Runtime {}
 
-pub fn new(modules) {
-
+impl Runtime {
+    pub fn new() {
+        // TODO add in hot-reload client connection
+    }
 }

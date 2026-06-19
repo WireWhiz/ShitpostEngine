@@ -1,9 +1,12 @@
 use std::{mem::ManuallyDrop, thread::JoinHandle};
+use server_api::WeaverMessage;
+use websocket::OwnedMessage;
 
 #[path = "server_api.rs"]
 pub mod server_api;
-use server_api::WeaverMessage;
-use websocket::OwnedMessage;
+
+pub use brane_weaver_proc as proc;
+
 
 enum Module {
     Static(Box<dyn ModuleHandle>),
