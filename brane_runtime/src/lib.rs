@@ -1,6 +1,7 @@
 brane_weaver::proc::register_all_modules!("modules/");
 
 pub mod meta_type;
+pub mod stable_table;
 pub mod task;
 
 pub struct Runtime {}

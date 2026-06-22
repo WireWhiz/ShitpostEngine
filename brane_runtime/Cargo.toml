@@ -7,3 +7,4 @@ edition = "2024"
 brane_runtime_proc = { path = "proc" }
 brane_weaver = { path = "../brane_weaver/" }
 cargodeps = { path = "cargodeps" } 
+thiserror = "2.0.18"

@@ -1,4 +1,6 @@
-use std::{collections::HashMap, sync::OnceLock};
+use std::{cell::UnsafeCell, collections::HashMap, ops::Deref, sync::OnceLock};
+
+use crate::{define_stable_key, stable_table::StableTable};
 
 /// Globally unique ID for a meta_type.
 ///
@@ -83,6 +85,14 @@ impl MetaTypeDefinition {
 pub trait MetaType: Sized + Unpin {
     fn meta_id() -> MetaTypeId;
     fn meta_def() -> &'static MetaTypeDefinition;
+    fn as_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
+            )
+        }
+    }
 }
 
 #[derive(Default)]
@@ -144,6 +154,11 @@ impl MetaValueVec {
         &mut self.data[range]
     }
 
+    pub fn push(&mut self, data: &[u8]) {
+        assert_eq!(data.len(), self.def.byte_size);
+        self.data.extend_from_slice(data);
+    }
+
     pub fn len(&self) -> usize {
         self.data.len() / self.def.byte_size
     }
@@ -155,6 +170,25 @@ impl MetaValueVec {
             (drop)(self.data.as_mut_ptr().add(range.start));
         }
         self.data.drain(range);
+    }
+
+    pub fn swap_remove(&mut self, index: usize) {
+        let drop = self.def.drop;
+        let range = self.get_index_range(index);
+        unsafe {
+            (drop)(self.data.as_mut_ptr().add(range.start));
+        }
+        if index != self.len() - 1 {
+            return;
+        }
+
+        // safe borrow checked version of a memcpy from the end of the array
+        // to the location we just deleted
+        let swap_from = self.get_index_range(self.len() - 1);
+        let (left, right) = self.data.split_at_mut(swap_from.start);
+        let from = &right[00..swap_from.len()];
+        let too = &mut left[range];
+        too.copy_from_slice(from);
     }
 
     pub fn clear(&mut self) {
@@ -200,4 +234,68 @@ pub fn make_drop_fn<T>() -> unsafe fn(*mut u8) {
         unsafe { std::ptr::drop_in_place(ptr as *mut T) };
     }
     drop_impl::<T>
+}
+
+pub struct StoreValueRef {
+    pub ty: StoreValueTypeId,
+    pub index: usize,
+}
+
+pub struct StoreValueTable {
+    pub values: MetaValueVec,
+    pub value_ids: Vec<StoreValueId>,
+}
+
+define_stable_key!(StoreValueTypeId);
+define_stable_key!(StoreValueId);
+/// Allocator and owner for meta values
+#[derive(Default)]
+pub struct MetaValueStore {
+    values: StableTable<StoreValueTypeId, UnsafeCell<StoreValueTable>>,
+    id_to_value: StableTable<StoreValueId, StoreValueRef>,
+    def_to_type: HashMap<MetaTypeId, StoreValueTypeId>,
+}
+
+impl MetaValueStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add<T: MetaType>(&mut self, value: T) -> StoreValueId {
+        let value_type_id = if let Some(value_type_id) = self.def_to_type.get(&T::meta_id()) {
+            *value_type_id
+        } else {
+            let value_type_id = self.values.add(UnsafeCell::new(StoreValueTable {
+                values: MetaValueVec::new(T::meta_def()),
+                value_ids: Vec::new(),
+            }));
+            self.def_to_type.insert(T::meta_id(), value_type_id);
+            value_type_id
+        };
+        let value_table = self.values[value_type_id].get_mut();
+
+        let index = value_table.values.len();
+
+        // Move value into value table
+        value_table.values.push(value.as_bytes());
+        std::mem::forget(value);
+
+        let value_ref = StoreValueRef {
+            ty: value_type_id,
+            index,
+        };
+        let value_id = self.id_to_value.add(value_ref);
+
+        value_id
+    }
+
+    pub fn get(&self, value: StoreValueId) -> &[u8] {
+        let path = &self.id_to_value[value];
+        unsafe { (*self.values[path.ty].get()).values.get(path.index) }
+    }
+
+    pub unsafe fn get_mut_unchecked(&self, value: StoreValueId) -> &mut [u8] {
+        let path = &self.id_to_value[value];
+        unsafe { (*self.values[path.ty].get()).values.get_mut(path.index) }
+    }
 }
