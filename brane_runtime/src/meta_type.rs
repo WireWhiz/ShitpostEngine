@@ -93,7 +93,59 @@ pub trait MetaType: Sized + Unpin {
             )
         }
     }
+    unsafe fn from_slice(bytes: &[u8]) -> &Self {
+        unsafe { Self::meta_def().from_slice(bytes) }
+    }
 }
+
+impl<T: MetaType> MetaType for Vec<T> {
+    fn meta_id() -> MetaTypeId {
+        MetaTypeId(global_unique_usize!())
+    }
+
+    fn meta_def() -> &'static MetaTypeDefinition {
+        static DEF: OnceLock<MetaTypeDefinition> = OnceLock::new();
+        DEF.get_or_init(|| MetaTypeDefinition {
+            id: Self::meta_id(),
+            ident: std::any::type_name::<Self>(),
+            byte_size: std::mem::size_of::<Self>(),
+            fields: &[],
+            drop: make_drop_fn::<Self>(),
+        })
+    }
+}
+
+#[macro_export]
+macro_rules! impl_metatype_opaque {
+    // Entry point: process a comma-separated list of types
+    ($($ty:ty),+ $(,)?) => {
+        $(impl_metatype_opaque!(@single $ty);)+
+    };
+
+    // Single type impl
+    (@single $ty:ty) => {
+        impl MetaType for $ty {
+            fn meta_id() -> MetaTypeId {
+                MetaTypeId(global_unique_usize!())
+            }
+
+            fn meta_def() -> &'static MetaTypeDefinition {
+                static DEF: OnceLock<MetaTypeDefinition> = OnceLock::new();
+                DEF.get_or_init(|| MetaTypeDefinition {
+                    id: Self::meta_id(),
+                    ident: std::any::type_name::<Self>(),
+                    byte_size: std::mem::size_of::<Self>(),
+                    fields: &[],
+                    drop: make_drop_fn::<Self>(),
+                })
+            }
+        }
+    };
+}
+
+impl_metatype_opaque!(u8, u16, u32, u64, usize);
+impl_metatype_opaque!(i8, i16, i32, i64, isize);
+impl_metatype_opaque!(f32, f64);
 
 #[derive(Default)]
 pub struct MetaTypeLibrary {
@@ -159,6 +211,12 @@ impl MetaValueVec {
         self.data.extend_from_slice(data);
     }
 
+    pub fn push_alloc(&mut self) -> usize {
+        let length = self.len();
+        self.data.resize(self.data.len() + self.def.byte_size, 0);
+        length
+    }
+
     pub fn len(&self) -> usize {
         self.data.len() / self.def.byte_size
     }
@@ -212,23 +270,6 @@ pub struct MetaValueQueue {
     def: &'static MetaTypeDefinition,
 }
 
-impl<T: MetaType> MetaType for Vec<T> {
-    fn meta_id() -> MetaTypeId {
-        MetaTypeId(global_unique_usize!())
-    }
-
-    fn meta_def() -> &'static MetaTypeDefinition {
-        static DEF: OnceLock<MetaTypeDefinition> = OnceLock::new();
-        DEF.get_or_init(|| MetaTypeDefinition {
-            id: Self::meta_id(),
-            ident: std::any::type_name::<Self>(),
-            byte_size: std::mem::size_of::<Self>(),
-            fields: &[],
-            drop: make_drop_fn::<Self>(),
-        })
-    }
-}
-
 pub fn make_drop_fn<T>() -> unsafe fn(*mut u8) {
     unsafe fn drop_impl<T>(ptr: *mut u8) {
         unsafe { std::ptr::drop_in_place(ptr as *mut T) };
@@ -279,6 +320,31 @@ impl MetaValueStore {
         // Move value into value table
         value_table.values.push(value.as_bytes());
         std::mem::forget(value);
+
+        let value_ref = StoreValueRef {
+            ty: value_type_id,
+            index,
+        };
+        let value_id = self.id_to_value.add(value_ref);
+
+        value_id
+    }
+
+    pub unsafe fn allocate(&mut self, def: &'static MetaTypeDefinition) -> StoreValueId {
+        let value_type_id = if let Some(value_type_id) = self.def_to_type.get(&def.id) {
+            *value_type_id
+        } else {
+            let value_type_id = self.values.add(UnsafeCell::new(StoreValueTable {
+                values: MetaValueVec::new(def),
+                value_ids: Vec::new(),
+            }));
+            self.def_to_type.insert(def.id, value_type_id);
+            value_type_id
+        };
+        let value_table = self.values[value_type_id].get_mut();
+
+        // Move value into value table
+        let index = value_table.values.push_alloc();
 
         let value_ref = StoreValueRef {
             ty: value_type_id,

@@ -25,24 +25,19 @@ use thiserror::Error;
 
 use crate::{
     define_stable_key,
-    meta_type::{MetaTypeDefinition, MetaValueStore, MetaValueVec, StoreValueId},
+    meta_type::{MetaTypeDefinition, MetaValueStore, StoreValueId},
     stable_table::StableTable,
 };
 
 define_stable_key!(TaskHandle);
-#[derive(Clone, Copy)]
-struct TaskInstancePath {
-    pub stage: usize,
-    pub instance: usize,
-}
 
 pub struct TaskGraph {
     task_instances: StableTable<TaskHandle, TaskInstance>,
     stages: Vec<TaskGraphStage>,
-    store: MetaValueStore,
+    pub store: MetaValueStore,
 }
 
-struct TaskGraphStage {
+pub struct TaskGraphStage {
     pub tasks: Vec<TaskHandle>,
 }
 
@@ -53,6 +48,14 @@ impl TaskGraph {
             stages: Vec::new(),
             store: MetaValueStore::new(),
         }
+    }
+
+    pub fn get_stages(&self) -> &Vec<TaskGraphStage> {
+        &self.stages
+    }
+
+    pub fn result_of(&self, handle: TaskHandle) -> StoreValueId {
+        self.task_instances[handle].data
     }
 
     pub fn run(&mut self) {
@@ -87,6 +90,27 @@ impl TaskGraph {
         }
     }
 
+    pub fn add_task(
+        &mut self,
+        default_data: StoreValueId,
+        def: Arc<TaskDefinition>,
+        args: Vec<TaskDataArg>,
+        queues: Vec<TaskQueueArg>,
+    ) -> TaskHandle {
+        assert_eq!(args.len(), def.data_params.len());
+        assert_eq!(queues.len(), def.queue_params.len());
+
+        let data = unsafe { self.store.allocate(def.output.type_def) };
+        self.task_instances.add(TaskInstance {
+            def,
+            args,
+            queues,
+            data,
+            stage: 0,
+            last_frame_data: Some(default_data),
+        })
+    }
+
     // Prefer localized sorting functions, once they exist
     pub fn sort(&mut self) -> Result<(), TaskGraphSortError> {
         let mut placed_instance_stages = HashMap::new();
@@ -97,6 +121,16 @@ impl TaskGraph {
                 &self.task_instances,
                 &mut placed_instance_stages,
             )?;
+        }
+
+        self.stages.clear();
+        for (placed, stage) in placed_instance_stages {
+            while self.stages.len() <= stage {
+                self.stages.push(TaskGraphStage { tasks: Vec::new() });
+            }
+
+            self.stages[stage].tasks.push(placed);
+            self.task_instances[placed].stage = stage;
         }
 
         Ok(())
@@ -195,34 +229,25 @@ fn format_cycle(cycle: &[TaskHandle]) -> String {
 
 pub type TaskCallback = unsafe fn(args: &[&[u8]], queues: &[&mut ()], output: &mut [u8]);
 
-struct TaskDefinition {
+pub struct TaskDefinition {
     pub queue_params: Vec<TaskQueueParam>,
     pub data_params: Vec<TaskDataParam>,
     pub output: TaskOutput,
     pub callback: TaskCallback,
 }
 
-struct TaskDataParam {
+pub struct TaskDataParam {
     pub type_def: &'static MetaTypeDefinition,
 }
 
-struct TaskQueueParam {
+pub struct TaskQueueParam {
     pub consumer: bool,
     pub type_def: &'static MetaTypeDefinition,
 }
 
-struct TaskOutput {
+pub struct TaskOutput {
     pub type_def: &'static MetaTypeDefinition,
 }
-
-struct TaskData {
-    /// Data from this frame/evaluation
-    pub fresh_data: MetaValueVec,
-    /// Data from the last frame/evaluation
-    pub stale_data: MetaValueVec,
-}
-
-/// A group of the same task to be run within one graph stage
 
 struct TaskInstance {
     pub def: Arc<TaskDefinition>,
