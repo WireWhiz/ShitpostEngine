@@ -8,3 +8,5 @@ crate-type = ["rlib", "dylib"]
 
 [dependencies]
 win-msgbox = "0.2"
+openxr = "0.21.1"
+ash = "0.38.0"

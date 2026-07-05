@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ash = "0.38.0"
 brane_runtime_proc = { path = "proc" }
 brane_weaver = { path = "../brane_weaver/" }
 cargodeps = { path = "cargodeps" } 
+openxr = "0.21.1"
 thiserror = "2.0.18"

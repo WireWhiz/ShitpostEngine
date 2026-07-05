@@ -3,6 +3,7 @@ use crate::task::TaskGraph;
 brane_weaver::proc::register_all_modules!("modules/");
 
 pub use brane_runtime_proc as proc;
+pub mod graphics;
 pub mod meta_type;
 pub mod stable_table;
 pub mod task;

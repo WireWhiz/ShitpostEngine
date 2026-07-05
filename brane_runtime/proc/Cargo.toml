@@ -8,5 +8,6 @@ proc-macro = true
 
 [dependencies]
 derive-syn-parse = "0.2.0"
+proc-macro2 = "1.0.106"
 quote = "1.0.45"
 syn = "2.0.117"
